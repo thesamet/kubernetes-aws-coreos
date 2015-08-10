@@ -33,6 +33,7 @@ Download the template:
 
 ```
 curl https://raw.githubusercontent.com/thesamet/kubernetes-aws-coreos/master/output/cloudformation-template.json -o cloudformation-template.json
+```
 
 Launch it with this command (don't forget to replace <things> with actual
 values):
