@@ -1,0 +1,264 @@
+#cloud-config
+
+---
+write-files:
+  - path: /etc/conf.d/nfs
+    permissions: '0644'
+    content: |
+      OPTS_RPC_MOUNTD=""
+  - path: /opt/bin/wupiao
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # [w]ait [u]ntil [p]ort [i]s [a]ctually [o]pen
+      [ -n "$1" ] && \
+        until curl -o /dev/null -sIf http://${1}; do \
+          sleep 1 && echo .;
+        done;
+      exit $?
+  - path: /opt/bin/generate-tokens
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Should be ran only at cluster construction time
+      set -e
+      if [ -f /srv/kubernetes/.done ]; then
+        exit 0
+      fi
+      umask 077
+
+      /usr/bin/wget -q -N -P /opt/bin https://raw.githubusercontent.com/GoogleCloudPlatform/kubernetes/v%(kube_version)s/cluster/saltbase/salt/generate-cert/make-ca-cert.sh
+      /usr/bin/chmod u=rwx,go= /opt/bin/make-ca-cert.sh
+      /opt/bin/make-ca-cert.sh ${DEFAULT_IPV4} IP:10.100.0.1,DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc,DNS:kubernetes.default.svc.%(dns_domain)s
+      kubelet_token=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
+      kube_proxy_token=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
+      admin_token=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
+      KNOWN_TOKENS_FILE=/srv/kubernetes/known_tokens.csv
+      echo "$admin_token,admin,admin" > $KNOWN_TOKENS_FILE
+      echo "$kubelet_token,kubelet,kubelet" >> $KNOWN_TOKENS_FILE
+      echo "$kube_proxy_token,kube_proxy,kube_proxy" >> $KNOWN_TOKENS_FILE
+      mkdir -p /srv/configs/kube-proxy
+      kube_proxy_kubeconfig_file="/srv/configs/kube-proxy/kubeconfig"
+
+      cat > /home/core/kubeconfig <<EOF
+      apiVersion: v1
+      clusters:
+      - cluster:
+          insecure-skip-tls-verify: true
+          server: https://${DEFAULT_IPV4}
+        name: kubernetes
+      contexts:
+      - context:
+          cluster: kubernetes
+          user: admin
+        name: kubernetes
+      current-context: kubernetes
+      kind: Config
+      preferences: {}
+      users:
+      - name: admin
+        user:
+          token: $admin_token
+      EOF
+      chown core:core /home/core/kubeconfig
+
+      cat > "${kube_proxy_kubeconfig_file}" <<EOF
+      apiVersion: v1
+      kind: Config
+      users:
+      - name: kube-proxy
+        user:
+          token: ${kube_proxy_token}
+      clusters:
+      - name: local
+        cluster:
+           insecure-skip-tls-verify: true
+      contexts:
+      - context:
+          cluster: local
+          user: kube-proxy
+        name: service-account-context
+      current-context: service-account-context
+      EOF
+
+      mkdir -p /srv/configs/kubelet
+      kubelet_kubeconfig_file="/srv/configs/kubelet/kubeconfig"
+      cat > "${kubelet_kubeconfig_file}" <<EOF
+      apiVersion: v1
+      kind: Config
+      users:
+      - name: kubelet
+        user:
+          token: ${kubelet_token}
+      clusters:
+      - name: local
+        cluster:
+           insecure-skip-tls-verify: true
+      contexts:
+      - context:
+          cluster: local
+          user: kubelet
+        name: service-account-context
+      current-context: service-account-context
+      EOF
+
+      # Put configs in etcd
+      cat $kubelet_kubeconfig_file | etcdctl set /kubeconfigs/kubelet
+      cat $kube_proxy_kubeconfig_file | etcdctl set /kubeconfigs/kube-proxy
+
+      # Generate tokens for other "service accounts".  Append to known_tokens.
+      #
+      # NB: If this list ever changes, this script actually has to
+      # change to detect the existence of this file, kill any deleted
+      # old tokens and add any new tokens (to handle the upgrade case).
+      service_accounts=("system:scheduler" "system:controller_manager" "system:logging" "system:monitoring" "system:dns")
+      for account in "${service_accounts[@]}"; do
+        token=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
+        echo "${token},${account},${account}" >> "${KNOWN_TOKENS_FILE}"
+      done
+      touch /srv/kubernetes/.done
+
+hostname: master
+coreos:
+  etcd2:
+    name: master
+    listen-client-urls: http://0.0.0.0:2379,http://0.0.0.0:4001
+    advertise-client-urls: http://$private_ipv4:2379,http://$private_ipv4:4001
+    initial-cluster-token: k8s_etcd
+    listen-peer-urls: http://$private_ipv4:2380,http://$private_ipv4:7001
+    initial-advertise-peer-urls: http://$private_ipv4:2380
+    initial-cluster: master=http://$private_ipv4:2380
+    initial-cluster-state: new
+  fleet:
+    metadata: "role=master"
+  units:
+    - name: generate-serviceaccount-key.service
+      command: start
+      content: |
+        [Unit]
+        Description=Generate service-account key file
+
+        [Service]
+        ExecStartPre=-/usr/bin/mkdir -p /opt/bin
+        ExecStart=/bin/openssl genrsa -out /opt/bin/kube-serviceaccount.key 2048 2>/dev/null
+        RemainAfterExit=yes
+        Type=oneshot
+    - name: setup-network-environment.service
+      command: start
+      content: |
+        [Unit]
+        Description=Setup Network Environment
+        Documentation=https://github.com/kelseyhightower/setup-network-environment
+        Requires=network-online.target
+        After=network-online.target
+
+        [Service]
+        ExecStartPre=-/usr/bin/mkdir -p /opt/bin
+        ExecStartPre=/usr/bin/curl -L -o /opt/bin/setup-network-environment -z /opt/bin/setup-network-environment https://github.com/kelseyhightower/setup-network-environment/releases/download/v1.0.0/setup-network-environment
+        ExecStartPre=/usr/bin/chmod +x /opt/bin/setup-network-environment
+        ExecStart=/opt/bin/setup-network-environment
+        RemainAfterExit=yes
+        Type=oneshot
+    - name: generate-k8s-certs.service
+      command: start
+      content: |
+        [Unit]
+        Description=Generate Kubernetes API Server certificates
+        ConditionPathExists=!/srv/kubernetes/.certs.lock
+        Requires=setup-network-environment.service etcd2.service
+        After=setup-network-environment.service etcd2.service
+
+        [Service]
+        EnvironmentFile=/etc/network-environment
+        ExecStartPre=-/usr/sbin/groupadd -r kube-cert
+        ExecStartPre=/opt/bin/wupiao 127.0.0.1:2379/v2/machines
+        ExecStart=/opt/bin/generate-tokens
+        Type=oneshot
+        RemainAfterExit=true
+    - name: fleet.service
+      command: start
+    - name: flanneld.service
+      command: start
+      drop-ins:
+        - name: 50-network-config.conf
+          content: |
+            [Unit]
+            Requires=etcd2.service
+            [Service]
+            ExecStartPre=/usr/bin/etcdctl set /coreos.com/network/config '{"Network":"10.244.0.0/16", "Backend": {"Type": "vxlan"}}'
+    - name: docker.service
+      command: start
+    - name: kube-apiserver.service
+      command: start
+      content: |
+        [Unit]
+        Description=Kubernetes API Server
+        Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+        Requires=setup-network-environment.service etcd2.service generate-serviceaccount-key.service
+        After=setup-network-environment.service etcd2.service generate-serviceaccount-key.service
+
+        [Service]
+        EnvironmentFile=/etc/network-environment
+        ExecStartPre=-/usr/bin/mkdir -p /opt/bin
+        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-apiserver -z /opt/bin/kube-apiserver %(kube_binaries)s/kube-apiserver
+        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-apiserver
+        ExecStartPre=/opt/bin/wupiao 127.0.0.1:2379/v2/machines
+        ExecStart=/opt/bin/kube-apiserver \
+        --service-account-key-file=/opt/bin/kube-serviceaccount.key \
+        --service-account-lookup=false \
+        --admission-control=NamespaceLifecycle,NamespaceAutoProvision,LimitRanger,SecurityContextDeny,ServiceAccount,ResourceQuota \
+        --runtime-config=api/v1 \
+        --allow-privileged=true \
+        --insecure-bind-address=0.0.0.0 \
+        --insecure-port=8080 \
+        --kubelet-https=true \
+        --secure-port=443 \
+        --service-cluster-ip-range=10.100.0.0/16 \
+        --etcd-servers=http://127.0.0.1:2379 \
+        --public-address-override=${DEFAULT_IPV4} \
+        --cloud-provider=aws \
+        --client-ca-file=/srv/kubernetes/ca.crt \
+        --tls-cert-file=/srv/kubernetes/server.cert \
+        --tls-private-key-file=/srv/kubernetes/server.key \
+        --token-auth-file=/srv/kubernetes/known_tokens.csv
+        --logtostderr=true
+        Restart=always
+        RestartSec=10
+    - name: kube-controller-manager.service
+      command: start
+      content: |
+        [Unit]
+        Description=Kubernetes Controller Manager
+        Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+        Requires=kube-apiserver.service
+        After=kube-apiserver.service
+
+        [Service]
+        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-controller-manager -z /opt/bin/kube-controller-manager %(kube_binaries)s/kube-controller-manager
+        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-controller-manager
+        ExecStart=/opt/bin/kube-controller-manager \
+        --service-account-private-key-file=/opt/bin/kube-serviceaccount.key \
+        --master=127.0.0.1:8080 \
+        --root-ca-file=/srv/kubernetes/ca.crt \
+        --cloud-provider=aws \
+        --logtostderr=true
+        Restart=always
+        RestartSec=10
+    - name: kube-scheduler.service
+      command: start
+      content: |
+        [Unit]
+        Description=Kubernetes Scheduler
+        Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+        Requires=kube-apiserver.service
+        After=kube-apiserver.service
+
+        [Service]
+        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-scheduler -z /opt/bin/kube-scheduler %(kube_binaries)s/kube-scheduler
+        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-scheduler
+        ExecStart=/opt/bin/kube-scheduler --master=127.0.0.1:8080
+        Restart=always
+        RestartSec=10
+  update:
+    group: alpha
+    reboot-strategy: off

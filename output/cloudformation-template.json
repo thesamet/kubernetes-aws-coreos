@@ -1,0 +1,704 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Kubernetes 1.0.1 on EC2 powered by CoreOS 681.2.0 (stable)",
+  "Parameters": {
+    "AMI": {
+      "Description": "AWS AMI to use",
+      "Type": "String",
+      "Default": "ami-85ada4b5"
+    },
+    "MasterInstanceType": {
+      "Description": "EC2 HVM instance type (m3.medium, etc) for master.",
+      "Type": "String",
+      "Default": "t2.micro"
+    },
+    "MinionInstanceType": {
+      "Description": "EC2 HVM instance type (m3.medium, etc) for minions.",
+      "Type": "String",
+      "Default": "m3.medium"
+    },
+    "ManagedMinionPolicyArn": {
+      "Description": "Managed ARNs to apply to the minion role.",
+      "Type": "String",
+      "Default": "NONE"
+    },
+    "ClusterSize": {
+      "Description": "Number of nodes in cluster (2-12).",
+      "Default": "2",
+      "MinValue": "2",
+      "MaxValue": "12",
+      "Type": "Number"
+    },
+    "AllowSSHFrom": {
+      "Description": "The net block (CIDR) that SSH is available to.",
+      "Default": "0.0.0.0/0",
+      "Type": "String"
+    },
+    "AllowHTTPSFrom": {
+      "Description": "The net block (CIDR) that HTTPS is available to.",
+      "Default": "0.0.0.0/0",
+      "Type": "String"
+    },
+    "AllowServiceAccessFrom": {
+      "Description": "The net block (CIDR) that HTTPS is available to.",
+      "Default": "0.0.0.0/0",
+      "Type": "String"
+    },
+    "ExternalAccessSecurityGroupId": {
+      "Description": "Optional security group id that is allowed to access exposed services",
+      "Default": "sg-887ba3ec",
+      "Type": "String"
+    },
+    "KeyPair": {
+      "Description": "The name of an EC2 Key Pair to allow SSH access to the instance.",
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "Default": "nadavsr-trueaccord"
+    },
+    "VpcId": {
+      "Description": "The ID of the VPC to launch into.",
+      "Type": "AWS::EC2::VPC::Id",
+      "Default": "vpc-c9977ba2"
+    },
+    "SubnetId": {
+      "Description": "The ID of the subnet to launch into (that must be within the supplied VPC)",
+      "Type": "AWS::EC2::Subnet::Id",
+      "Default": "subnet-5032d635"
+    },
+    "SubnetAZ": {
+      "Description": "The availability zone of the subnet supplied (for example eu-west-1a)",
+      "Type": "String",
+      "Default": "us-west-2b"
+    }
+  },
+  "Conditions": {
+    "UseEC2Classic": {
+        "Fn::Equals": [{"Ref": "VpcId"}, ""]},
+    "NoExternalAccessSecurityGroupId": {
+        "Fn::Equals": [{"Ref": "ExternalAccessSecurityGroupId"}, ""]},
+    "NoManagedMinionPolicyArn": {
+        "Fn::Equals": [{"Ref": "ManagedMinionPolicyArn"}, "NONE"]
+    }
+  },
+  "Resources": {
+    "KubernetesMinionRole": {
+        "Type" : "AWS::IAM::Role",
+        "Properties" : {
+            "AssumeRolePolicyDocument": {
+                "Version" : "2012-10-17",
+                "Statement": [ {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": [ "ec2.amazonaws.com" ]
+                    },
+                    "Action": [ "sts:AssumeRole" ]
+                } ]
+            },
+            "Policies": [ {
+                "PolicyName" : "KubernetesMinionPolicy",
+                "PolicyDocument" : {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": "s3:*",
+                        "Resource": [
+                            "arn:aws:s3:::kubernetes-*"
+                            ]
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": "ec2:Describe*",
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": "ec2:AttachVolume",
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": "ec2:DetachVolume",
+                        "Resource": "*"
+                    }
+                    ]
+                }
+            }],
+            "ManagedPolicyArns": {
+                "Fn::If": [
+                    "NoManagedMinionPolicyArn", 
+                    {"Ref": "AWS::NoValue"}, 
+                    [{"Ref": "ManagedMinionPolicyArn"}]
+                ]}
+        }
+    },
+    "KubernetesMasterRole": {
+        "Type" : "AWS::IAM::Role",
+        "Properties" : {
+            "AssumeRolePolicyDocument": {
+                "Version" : "2012-10-17",
+                "Statement": [ {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": [ "ec2.amazonaws.com" ]
+                    },
+                    "Action": [ "sts:AssumeRole" ]
+                } ]
+            },
+            "Policies": [ {
+                "PolicyName" : "KubernitionMasterPolicy",
+                "PolicyDocument" : {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": ["ec2:*"],
+                        "Resource": ["*"]
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": ["elasticloadbalancing:*"],
+                        "Resource": ["*"]
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": "s3:*",
+                        "Resource": [
+                            "arn:aws:s3:::kubernetes-*"
+                        ]
+                    }
+                    ]
+                }
+            }]
+        }
+    },
+    "KubernetesMasterInstanceProfile": {
+        "Type": "AWS::IAM::InstanceProfile",
+        "Properties": {
+            "Roles": [ {
+                "Ref": "KubernetesMasterRole"
+            } ]
+        }
+    },
+    "KubernetesMinionInstanceProfile": {
+        "Type": "AWS::IAM::InstanceProfile",
+        "Properties": {
+            "Roles": [ {
+                "Ref": "KubernetesMinionRole"
+            } ]
+        }
+    },
+    "KubernetesSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {"Fn::If": ["UseEC2Classic", {"Ref": "AWS::NoValue"}, {"Ref": "VpcId"}]},
+        "GroupDescription": "Kubernetes SecurityGroup",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "22",
+            "ToPort": "22",
+            "CidrIp": {"Ref": "AllowSSHFrom"}
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "443",
+            "ToPort": "443",
+            "CidrIp": {"Ref": "AllowHTTPSFrom"}
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "30000",
+            "ToPort": "32767",
+            "CidrIp": {"Ref": "AllowServiceAccessFrom"}
+          },
+          {"Fn::If": ["NoExternalAccessSecurityGroupId",
+          {"Ref" : "AWS::NoValue"},
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "30000",
+            "ToPort": "32767",
+            "SourceSecurityGroupId": {"Ref": "ExternalAccessSecurityGroupId"}
+          }
+          ]
+          }
+        ]
+      }
+    },
+    "KubernetesIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {"Fn::GetAtt": ["KubernetesSecurityGroup", "GroupId"]},
+        "IpProtocol": "tcp",
+        "FromPort": "1",
+        "ToPort": "65535",
+        "SourceSecurityGroupId": {
+          "Fn::GetAtt" : [ "KubernetesSecurityGroup", "GroupId" ]
+        }
+      }
+    },
+    "KubernetesIngressUDP": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {"Fn::GetAtt": ["KubernetesSecurityGroup", "GroupId"]},
+        "IpProtocol": "udp",
+        "FromPort": "1",
+        "ToPort": "65535",
+        "SourceSecurityGroupId": {
+          "Fn::GetAtt" : [ "KubernetesSecurityGroup", "GroupId" ]
+        }
+      }
+    },
+    "KubernetesMasterInstance": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "NetworkInterfaces" : [{
+          "GroupSet"                 : [{"Fn::GetAtt": ["KubernetesSecurityGroup", "GroupId"]}],
+          "AssociatePublicIpAddress" : "false",
+          "DeviceIndex"              : "0",
+          "DeleteOnTermination"      : "true",
+          "SubnetId"                 : {"Fn::If": ["UseEC2Classic", {"Ref": "AWS::NoValue"}, {"Ref": "SubnetId"}]}
+        }],
+        "ImageId": {"Ref": "AMI"},
+        "IamInstanceProfile" : {"Ref": "KubernetesMasterInstanceProfile"},
+        "InstanceType": {"Ref": "MasterInstanceType"},
+        "KeyName": {"Ref": "KeyPair"},
+        "Tags" : [
+          {"Key" : "Name", "Value" : {"Fn::Join" : [ "-", [ {"Ref" : "AWS::StackName"}, "k8s-master" ] ]}},
+          {"Key" : "KubernetesRole", "Value" : "node"}
+        ],
+        "UserData": { "Fn::Base64": {"Fn::Join" : ["",
+            [
+  "#cloud-config\n", 
+  "\n", 
+  "---\n", 
+  "write-files:\n", 
+  "  - path: /etc/conf.d/nfs\n", 
+  "    permissions: '0644'\n", 
+  "    content: |\n", 
+  "      OPTS_RPC_MOUNTD=\"\"\n", 
+  "  - path: /opt/bin/wupiao\n", 
+  "    permissions: '0755'\n", 
+  "    content: |\n", 
+  "      #!/bin/bash\n", 
+  "      # [w]ait [u]ntil [p]ort [i]s [a]ctually [o]pen\n", 
+  "      [ -n \"$1\" ] && \\\n", 
+  "        until curl -o /dev/null -sIf http://${1}; do \\\n", 
+  "          sleep 1 && echo .;\n", 
+  "        done;\n", 
+  "      exit $?\n", 
+  "  - path: /opt/bin/generate-tokens\n", 
+  "    permissions: '0755'\n", 
+  "    content: |\n", 
+  "      #!/bin/bash\n", 
+  "      # Should be ran only at cluster construction time\n", 
+  "      set -e\n", 
+  "      if [ -f /srv/kubernetes/.done ]; then\n", 
+  "        exit 0\n", 
+  "      fi\n", 
+  "      umask 077\n", 
+  "\n", 
+  "      /usr/bin/wget -q -N -P /opt/bin https://raw.githubusercontent.com/GoogleCloudPlatform/kubernetes/v1.0.1/cluster/saltbase/salt/generate-cert/make-ca-cert.sh\n", 
+  "      /usr/bin/chmod u=rwx,go= /opt/bin/make-ca-cert.sh\n", 
+  "      /opt/bin/make-ca-cert.sh ${DEFAULT_IPV4} IP:10.100.0.1,DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc,DNS:kubernetes.default.svc.cluster.local\n", 
+  "      kubelet_token=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d \"=+/\" | dd bs=32 count=1 2>/dev/null)\n", 
+  "      kube_proxy_token=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d \"=+/\" | dd bs=32 count=1 2>/dev/null)\n", 
+  "      admin_token=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d \"=+/\" | dd bs=32 count=1 2>/dev/null)\n", 
+  "      KNOWN_TOKENS_FILE=/srv/kubernetes/known_tokens.csv\n", 
+  "      echo \"$admin_token,admin,admin\" > $KNOWN_TOKENS_FILE\n", 
+  "      echo \"$kubelet_token,kubelet,kubelet\" >> $KNOWN_TOKENS_FILE\n", 
+  "      echo \"$kube_proxy_token,kube_proxy,kube_proxy\" >> $KNOWN_TOKENS_FILE\n", 
+  "      mkdir -p /srv/configs/kube-proxy\n", 
+  "      kube_proxy_kubeconfig_file=\"/srv/configs/kube-proxy/kubeconfig\"\n", 
+  "\n", 
+  "      cat > /home/core/kubeconfig <<EOF\n", 
+  "      apiVersion: v1\n", 
+  "      clusters:\n", 
+  "      - cluster:\n", 
+  "          insecure-skip-tls-verify: true\n", 
+  "          server: https://${DEFAULT_IPV4}\n", 
+  "        name: kubernetes\n", 
+  "      contexts:\n", 
+  "      - context:\n", 
+  "          cluster: kubernetes\n", 
+  "          user: admin\n", 
+  "        name: kubernetes\n", 
+  "      current-context: kubernetes\n", 
+  "      kind: Config\n", 
+  "      preferences: {}\n", 
+  "      users:\n", 
+  "      - name: admin\n", 
+  "        user:\n", 
+  "          token: $admin_token\n", 
+  "      EOF\n", 
+  "      chown core:core /home/core/kubeconfig\n", 
+  "\n", 
+  "      cat > \"${kube_proxy_kubeconfig_file}\" <<EOF\n", 
+  "      apiVersion: v1\n", 
+  "      kind: Config\n", 
+  "      users:\n", 
+  "      - name: kube-proxy\n", 
+  "        user:\n", 
+  "          token: ${kube_proxy_token}\n", 
+  "      clusters:\n", 
+  "      - name: local\n", 
+  "        cluster:\n", 
+  "           insecure-skip-tls-verify: true\n", 
+  "      contexts:\n", 
+  "      - context:\n", 
+  "          cluster: local\n", 
+  "          user: kube-proxy\n", 
+  "        name: service-account-context\n", 
+  "      current-context: service-account-context\n", 
+  "      EOF\n", 
+  "\n", 
+  "      mkdir -p /srv/configs/kubelet\n", 
+  "      kubelet_kubeconfig_file=\"/srv/configs/kubelet/kubeconfig\"\n", 
+  "      cat > \"${kubelet_kubeconfig_file}\" <<EOF\n", 
+  "      apiVersion: v1\n", 
+  "      kind: Config\n", 
+  "      users:\n", 
+  "      - name: kubelet\n", 
+  "        user:\n", 
+  "          token: ${kubelet_token}\n", 
+  "      clusters:\n", 
+  "      - name: local\n", 
+  "        cluster:\n", 
+  "           insecure-skip-tls-verify: true\n", 
+  "      contexts:\n", 
+  "      - context:\n", 
+  "          cluster: local\n", 
+  "          user: kubelet\n", 
+  "        name: service-account-context\n", 
+  "      current-context: service-account-context\n", 
+  "      EOF\n", 
+  "\n", 
+  "      # Put configs in etcd\n", 
+  "      cat $kubelet_kubeconfig_file | etcdctl set /kubeconfigs/kubelet\n", 
+  "      cat $kube_proxy_kubeconfig_file | etcdctl set /kubeconfigs/kube-proxy\n", 
+  "\n", 
+  "      # Generate tokens for other \"service accounts\".  Append to known_tokens.\n", 
+  "      #\n", 
+  "      # NB: If this list ever changes, this script actually has to\n", 
+  "      # change to detect the existence of this file, kill any deleted\n", 
+  "      # old tokens and add any new tokens (to handle the upgrade case).\n", 
+  "      service_accounts=(\"system:scheduler\" \"system:controller_manager\" \"system:logging\" \"system:monitoring\" \"system:dns\")\n", 
+  "      for account in \"${service_accounts[@]}\"; do\n", 
+  "        token=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d \"=+/\" | dd bs=32 count=1 2>/dev/null)\n", 
+  "        echo \"${token},${account},${account}\" >> \"${KNOWN_TOKENS_FILE}\"\n", 
+  "      done\n", 
+  "      touch /srv/kubernetes/.done\n", 
+  "\n", 
+  "hostname: master\n", 
+  "coreos:\n", 
+  "  etcd2:\n", 
+  "    name: master\n", 
+  "    listen-client-urls: http://0.0.0.0:2379,http://0.0.0.0:4001\n", 
+  "    advertise-client-urls: http://$private_ipv4:2379,http://$private_ipv4:4001\n", 
+  "    initial-cluster-token: k8s_etcd\n", 
+  "    listen-peer-urls: http://$private_ipv4:2380,http://$private_ipv4:7001\n", 
+  "    initial-advertise-peer-urls: http://$private_ipv4:2380\n", 
+  "    initial-cluster: master=http://$private_ipv4:2380\n", 
+  "    initial-cluster-state: new\n", 
+  "  fleet:\n", 
+  "    metadata: \"role=master\"\n", 
+  "  units:\n", 
+  "    - name: generate-serviceaccount-key.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Generate service-account key file\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        ExecStartPre=-/usr/bin/mkdir -p /opt/bin\n", 
+  "        ExecStart=/bin/openssl genrsa -out /opt/bin/kube-serviceaccount.key 2048 2>/dev/null\n", 
+  "        RemainAfterExit=yes\n", 
+  "        Type=oneshot\n", 
+  "    - name: setup-network-environment.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Setup Network Environment\n", 
+  "        Documentation=https://github.com/kelseyhightower/setup-network-environment\n", 
+  "        Requires=network-online.target\n", 
+  "        After=network-online.target\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        ExecStartPre=-/usr/bin/mkdir -p /opt/bin\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/setup-network-environment -z /opt/bin/setup-network-environment https://github.com/kelseyhightower/setup-network-environment/releases/download/v1.0.0/setup-network-environment\n", 
+  "        ExecStartPre=/usr/bin/chmod +x /opt/bin/setup-network-environment\n", 
+  "        ExecStart=/opt/bin/setup-network-environment\n", 
+  "        RemainAfterExit=yes\n", 
+  "        Type=oneshot\n", 
+  "    - name: generate-k8s-certs.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Generate Kubernetes API Server certificates\n", 
+  "        ConditionPathExists=!/srv/kubernetes/.certs.lock\n", 
+  "        Requires=setup-network-environment.service etcd2.service\n", 
+  "        After=setup-network-environment.service etcd2.service\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        EnvironmentFile=/etc/network-environment\n", 
+  "        ExecStartPre=-/usr/sbin/groupadd -r kube-cert\n", 
+  "        ExecStartPre=/opt/bin/wupiao 127.0.0.1:2379/v2/machines\n", 
+  "        ExecStart=/opt/bin/generate-tokens\n", 
+  "        Type=oneshot\n", 
+  "        RemainAfterExit=true\n", 
+  "    - name: fleet.service\n", 
+  "      command: start\n", 
+  "    - name: flanneld.service\n", 
+  "      command: start\n", 
+  "      drop-ins:\n", 
+  "        - name: 50-network-config.conf\n", 
+  "          content: |\n", 
+  "            [Unit]\n", 
+  "            Requires=etcd2.service\n", 
+  "            [Service]\n", 
+  "            ExecStartPre=/usr/bin/etcdctl set /coreos.com/network/config '{\"Network\":\"10.244.0.0/16\", \"Backend\": {\"Type\": \"vxlan\"}}'\n", 
+  "    - name: docker.service\n", 
+  "      command: start\n", 
+  "    - name: kube-apiserver.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Kubernetes API Server\n", 
+  "        Documentation=https://github.com/GoogleCloudPlatform/kubernetes\n", 
+  "        Requires=setup-network-environment.service etcd2.service generate-serviceaccount-key.service\n", 
+  "        After=setup-network-environment.service etcd2.service generate-serviceaccount-key.service\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        EnvironmentFile=/etc/network-environment\n", 
+  "        ExecStartPre=-/usr/bin/mkdir -p /opt/bin\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-apiserver -z /opt/bin/kube-apiserver http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kube-apiserver\n", 
+  "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-apiserver\n", 
+  "        ExecStartPre=/opt/bin/wupiao 127.0.0.1:2379/v2/machines\n", 
+  "        ExecStart=/opt/bin/kube-apiserver \\\n", 
+  "        --service-account-key-file=/opt/bin/kube-serviceaccount.key \\\n", 
+  "        --service-account-lookup=false \\\n", 
+  "        --admission-control=NamespaceLifecycle,NamespaceAutoProvision,LimitRanger,SecurityContextDeny,ServiceAccount,ResourceQuota \\\n", 
+  "        --runtime-config=api/v1 \\\n", 
+  "        --allow-privileged=true \\\n", 
+  "        --insecure-bind-address=0.0.0.0 \\\n", 
+  "        --insecure-port=8080 \\\n", 
+  "        --kubelet-https=true \\\n", 
+  "        --secure-port=443 \\\n", 
+  "        --service-cluster-ip-range=10.100.0.0/16 \\\n", 
+  "        --etcd-servers=http://127.0.0.1:2379 \\\n", 
+  "        --public-address-override=${DEFAULT_IPV4} \\\n", 
+  "        --cloud-provider=aws \\\n", 
+  "        --client-ca-file=/srv/kubernetes/ca.crt \\\n", 
+  "        --tls-cert-file=/srv/kubernetes/server.cert \\\n", 
+  "        --tls-private-key-file=/srv/kubernetes/server.key \\\n", 
+  "        --token-auth-file=/srv/kubernetes/known_tokens.csv\n", 
+  "        --logtostderr=true\n", 
+  "        Restart=always\n", 
+  "        RestartSec=10\n", 
+  "    - name: kube-controller-manager.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Kubernetes Controller Manager\n", 
+  "        Documentation=https://github.com/GoogleCloudPlatform/kubernetes\n", 
+  "        Requires=kube-apiserver.service\n", 
+  "        After=kube-apiserver.service\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-controller-manager -z /opt/bin/kube-controller-manager http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kube-controller-manager\n", 
+  "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-controller-manager\n", 
+  "        ExecStart=/opt/bin/kube-controller-manager \\\n", 
+  "        --service-account-private-key-file=/opt/bin/kube-serviceaccount.key \\\n", 
+  "        --master=127.0.0.1:8080 \\\n", 
+  "        --root-ca-file=/srv/kubernetes/ca.crt \\\n", 
+  "        --cloud-provider=aws \\\n", 
+  "        --logtostderr=true\n", 
+  "        Restart=always\n", 
+  "        RestartSec=10\n", 
+  "    - name: kube-scheduler.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Kubernetes Scheduler\n", 
+  "        Documentation=https://github.com/GoogleCloudPlatform/kubernetes\n", 
+  "        Requires=kube-apiserver.service\n", 
+  "        After=kube-apiserver.service\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-scheduler -z /opt/bin/kube-scheduler http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kube-scheduler\n", 
+  "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-scheduler\n", 
+  "        ExecStart=/opt/bin/kube-scheduler --master=127.0.0.1:8080\n", 
+  "        Restart=always\n", 
+  "        RestartSec=10\n", 
+  "  update:\n", 
+  "    group: alpha\n", 
+  "    reboot-strategy: off\n"
+]
+            ]}
+        }
+      }
+    },
+    "KubernetesNodeLaunchConfig": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "ImageId": {"Ref": "AMI"},
+        "InstanceType": {"Ref": "MinionInstanceType"},
+        "KeyName": {"Ref": "KeyPair"},
+        "AssociatePublicIpAddress" : "false",
+        "IamInstanceProfile" : {"Ref": "KubernetesMinionInstanceProfile"},
+        "SecurityGroups": [{"Fn::If": [
+          "UseEC2Classic",
+          {"Ref": "KubernetesSecurityGroup"},
+          {"Fn::GetAtt": ["KubernetesSecurityGroup", "GroupId"]}]
+        }],
+        "UserData": { "Fn::Base64": {"Fn::Join" : ["",
+            [
+  "#cloud-config\n", 
+  "write-files:\n", 
+  "  - path: /opt/bin/wupiao\n", 
+  "    permissions: '0755'\n", 
+  "    content: |\n", 
+  "      #!/bin/bash\n", 
+  "      # [w]ait [u]ntil [p]ort [i]s [a]ctually [o]pen\n", 
+  "      [ -n \"$1\" ] && [ -n \"$2\" ] && while ! curl --output /dev/null \\\n", 
+  "        --silent --head --fail \\\n", 
+  "        http://${1}:${2}; do sleep 1 && echo -n .; done;\n", 
+  "      exit $?\n", 
+  "  - path: /opt/bin/fetch-kubeconfigs\n", 
+  "    permissions: '0755'\n", 
+  "    content: |\n", 
+  "      #!/bin/bash\n", 
+  "      #TODO: fix permissions\n", 
+  "      mkdir -p /var/lib/kubelet\n", 
+  "      mkdir -p /var/lib/kube-proxy\n", 
+  "      etcdctl get /kubeconfigs/kubelet > /var/lib/kubelet/kubeconfig\n", 
+  "      etcdctl get /kubeconfigs/kube-proxy > /var/lib/kube-proxy/kubeconfig\n", 
+  "coreos:\n", 
+  "  etcd2:\n", 
+  "    listen-client-urls: http://0.0.0.0:2379,http://0.0.0.0:4001\n", 
+  "    advertise-client-urls: http://0.0.0.0:2379,http://0.0.0.0:4001\n", 
+  "    initial-cluster: master=http://", {"Fn::GetAtt" :["KubernetesMasterInstance" , "PrivateIp"]}, ":2380\n", 
+  "    proxy: on\n", 
+  "  fleet:\n", 
+  "    metadata: \"role=node\"\n", 
+  "  units:\n", 
+  "    - name: fleet.service\n", 
+  "      command: start\n", 
+  "    - name: flanneld.service\n", 
+  "      command: start\n", 
+  "      drop-ins:\n", 
+  "        - name: 50-network-config.conf\n", 
+  "          content: |\n", 
+  "            [Unit]\n", 
+  "            Requires=etcd2.service\n", 
+  "            [Service]\n", 
+  "            ExecStartPre=/usr/bin/etcdctl set /coreos.com/network/config '{\"Network\":\"10.244.0.0/16\", \"Backend\": {\"Type\": \"vxlan\"}}'\n", 
+  "    - name: docker.service\n", 
+  "      command: start\n", 
+  "    - name: setup-network-environment.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Setup Network Environment\n", 
+  "        Documentation=https://github.com/kelseyhightower/setup-network-environment\n", 
+  "        Requires=network-online.target\n", 
+  "        After=network-online.target\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        ExecStartPre=-/usr/bin/mkdir -p /opt/bin\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/setup-network-environment -z /opt/bin/setup-network-environment https://github.com/kelseyhightower/setup-network-environment/releases/download/v1.0.0/setup-network-environment\n", 
+  "        ExecStartPre=/usr/bin/chmod +x /opt/bin/setup-network-environment\n", 
+  "        ExecStart=/opt/bin/setup-network-environment\n", 
+  "        RemainAfterExit=yes\n", 
+  "        Type=oneshot\n", 
+  "    - name: fetch-kubeconfigs.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Fetch Kubeconfigs from etcd\n", 
+  "        Requires=etcd2.service\n", 
+  "        After=etcd2.service\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        ExecStart=/opt/bin/fetch-kubeconfigs\n", 
+  "        RemainAfterExit=yes\n", 
+  "        Type=oneshot\n", 
+  "    - name: kube-proxy.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Kubernetes Proxy\n", 
+  "        Documentation=https://github.com/GoogleCloudPlatform/kubernetes\n", 
+  "        Requires=setup-network-environment.service fetch-kubeconfigs.service\n", 
+  "        After=setup-network-environment.service fetch-kubeconfigs.service\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-proxy -z /opt/bin/kube-proxy http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kube-proxy\n", 
+  "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-proxy\n", 
+  "        # wait for kubernetes master to be up and ready\n", 
+  "        ExecStartPre=/opt/bin/wupiao ", {"Fn::GetAtt" :["KubernetesMasterInstance" , "PrivateIp"]}, " 8080\n", 
+  "        ExecStart=/opt/bin/kube-proxy \\\n", 
+  "        --master=https://", {"Fn::GetAtt" :["KubernetesMasterInstance" , "PrivateIp"]}, " \\\n", 
+  "        --kubeconfig=/var/lib/kube-proxy/kubeconfig \\\n", 
+  "        --logtostderr=true\n", 
+  "        Restart=always\n", 
+  "        RestartSec=10\n", 
+  "    - name: kube-kubelet.service\n", 
+  "      command: start\n", 
+  "      content: |\n", 
+  "        [Unit]\n", 
+  "        Description=Kubernetes Kubelet\n", 
+  "        Documentation=https://github.com/GoogleCloudPlatform/kubernetes\n", 
+  "        Requires=setup-network-environment.service fetch-kubeconfigs.service\n", 
+  "        After=setup-network-environment.service fetch-kubeconfigs.service\n", 
+  "\n", 
+  "        [Service]\n", 
+  "        EnvironmentFile=/etc/network-environment\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kubelet -z /opt/bin/kubelet http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kubelet\n", 
+  "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kubelet\n", 
+  "        # wait for kubernetes master to be up and ready\n", 
+  "        ExecStartPre=/opt/bin/wupiao ", {"Fn::GetAtt" :["KubernetesMasterInstance" , "PrivateIp"]}, " 8080\n", 
+  "        ExecStart=/opt/bin/kubelet \\\n", 
+  "        --address=0.0.0.0 \\\n", 
+  "        --port=10250 \\\n", 
+  "        --api-servers=https://", {"Fn::GetAtt" :["KubernetesMasterInstance" , "PrivateIp"]}, " \\\n", 
+  "        --kubeconfig=/var/lib/kubelet/kubeconfig \\\n", 
+  "        --allow-privileged=true \\\n", 
+  "        --logtostderr=true \\\n", 
+  "        --cadvisor-port=4194 \\\n", 
+  "        --healthz-bind-address=0.0.0.0 \\\n", 
+  "        --cluster-dns=10.100.1.1 \\\n", 
+  "        --cluster-domain=cluster.local \\\n", 
+  "        --healthz-port=10248\n", 
+  "        Restart=always\n", 
+  "        RestartSec=10\n", 
+  "  update:\n", 
+  "    group: alpha\n", 
+  "    reboot-strategy: off\n"
+]
+          ]}
+        }
+      }
+    },
+    "KubernetesAutoScalingGroup": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "AvailabilityZones": {"Fn::If": ["UseEC2Classic", {"Fn::GetAZs": ""}, [{"Ref": "SubnetAZ"}]]},
+        "VPCZoneIdentifier": {"Fn::If": ["UseEC2Classic", {"Ref": "AWS::NoValue"}, [{"Ref": "SubnetId"}]]},
+        "LaunchConfigurationName": {"Ref": "KubernetesNodeLaunchConfig"},
+        "MinSize": "2",
+        "MaxSize": "12",
+        "DesiredCapacity": {"Ref": "ClusterSize"},
+        "Tags" : [
+          {"Key" : "Name", "Value" : {"Fn::Join" : [ "-", [ {"Ref" : "AWS::StackName"}, "k8s-node" ] ]}, "PropagateAtLaunch" : true},
+          {"Key" : "KubernetesRole", "Value" : "node", "PropagateAtLaunch" : true}
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "KubernetesMasterPrivateIp": {
+    "Description": "Public Ip of the newly created Kubernetes Master instance",
+      "Value": {"Fn::GetAtt": ["KubernetesMasterInstance" , "PrivateIp"]}
+    }
+  }
+}
