@@ -1,12 +1,41 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "Kubernetes 1.0.1 on EC2 powered by CoreOS 681.2.0 (stable)",
+  "Mappings": {
+    "RegionMap": {
+      "eu-central-1" : {
+        "AMI" :	"ami-bececaa3"
+      },
+      "ap-northeast-1" : {
+        "AMI" :	"ami-f2338ff2"
+      },
+      "us-gov-west-1" : {
+        "AMI" :	"ami-c75033e4"
+      },
+      "sa-east-1" : {
+        "AMI" :	"ami-11e9600c"
+      },
+      "ap-southeast-2" : {
+        "AMI" :	"ami-8f88c8b5"
+      },
+      "ap-southeast-1" : {
+        "AMI" :	"ami-b6d8d4e4"
+      },
+      "us-east-1" : {
+        "AMI" :	"ami-3d73d356"
+      },
+      "us-west-2" : {
+        "AMI" :	"ami-85ada4b5"
+      },
+      "us-west-1" : {
+        "AMI" :	"ami-1db04f59"
+      },
+      "eu-west-1" : {
+        "AMI" :	"ami-0e104179"
+      }
+    }
+  },
   "Parameters": {
-    "AMI": {
-      "Description": "AWS AMI to use",
-      "Type": "String",
-      "Default": "ami-85ada4b5"
-    },
     "MasterInstanceType": {
       "Description": "EC2 HVM instance type (m3.medium, etc) for master.",
       "Type": "String",
@@ -64,6 +93,11 @@
       "Description": "Managed ARNs to apply to the minion role.",
       "Type": "String",
       "Default": "NONE"
+    },
+    "KubernetesBinaries": {
+      "Description": "URL to download Kubenetes binaries from.",
+      "Type": "String",
+      "Default": "http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com"
     }
   },
   "Conditions": {
@@ -254,7 +288,7 @@
           "DeleteOnTermination"      : "true",
           "SubnetId"                 : {"Fn::If": ["UseEC2Classic", {"Ref": "AWS::NoValue"}, {"Ref": "SubnetId"}]}
         }],
-        "ImageId": {"Ref": "AMI"},
+        "ImageId": {"Fn::FindInMap" : ["RegionMap", {"Ref": "AWS::Region" }, "AMI"]},
         "IamInstanceProfile" : {"Ref": "KubernetesMasterInstanceProfile"},
         "InstanceType": {"Ref": "MasterInstanceType"},
         "KeyName": {"Ref": "KeyPair"},
@@ -271,7 +305,7 @@
     "KubernetesNodeLaunchConfig": {
       "Type": "AWS::AutoScaling::LaunchConfiguration",
       "Properties": {
-        "ImageId": {"Ref": "AMI"},
+        "ImageId": {"Fn::FindInMap" : ["RegionMap", {"Ref": "AWS::Region" }, "AMI"]},
         "InstanceType": {"Ref": "MinionInstanceType"},
         "KeyName": {"Ref": "KeyPair"},
         "AssociatePublicIpAddress" : "false",

@@ -1,12 +1,41 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "Kubernetes 1.0.1 on EC2 powered by CoreOS 681.2.0 (stable)",
+  "Mappings": {
+    "RegionMap": {
+      "eu-central-1" : {
+        "AMI" :	"ami-bececaa3"
+      },
+      "ap-northeast-1" : {
+        "AMI" :	"ami-f2338ff2"
+      },
+      "us-gov-west-1" : {
+        "AMI" :	"ami-c75033e4"
+      },
+      "sa-east-1" : {
+        "AMI" :	"ami-11e9600c"
+      },
+      "ap-southeast-2" : {
+        "AMI" :	"ami-8f88c8b5"
+      },
+      "ap-southeast-1" : {
+        "AMI" :	"ami-b6d8d4e4"
+      },
+      "us-east-1" : {
+        "AMI" :	"ami-3d73d356"
+      },
+      "us-west-2" : {
+        "AMI" :	"ami-85ada4b5"
+      },
+      "us-west-1" : {
+        "AMI" :	"ami-1db04f59"
+      },
+      "eu-west-1" : {
+        "AMI" :	"ami-0e104179"
+      }
+    }
+  },
   "Parameters": {
-    "AMI": {
-      "Description": "AWS AMI to use",
-      "Type": "String",
-      "Default": "ami-85ada4b5"
-    },
     "MasterInstanceType": {
       "Description": "EC2 HVM instance type (m3.medium, etc) for master.",
       "Type": "String",
@@ -17,17 +46,28 @@
       "Type": "String",
       "Default": "m3.medium"
     },
-    "ManagedMinionPolicyArn": {
-      "Description": "Managed ARNs to apply to the minion role.",
-      "Type": "String",
-      "Default": "NONE"
-    },
     "ClusterSize": {
       "Description": "Number of nodes in cluster (2-12).",
       "Default": "2",
       "MinValue": "2",
       "MaxValue": "12",
       "Type": "Number"
+    },
+    "KeyPair": {
+      "Description": "The name of an EC2 Key Pair to allow SSH access to the instance.",
+      "Type": "AWS::EC2::KeyPair::KeyName"
+    },
+    "VpcId": {
+      "Description": "The ID of the VPC to launch into.",
+      "Type": "AWS::EC2::VPC::Id"
+    },
+    "SubnetId": {
+      "Description": "The ID of the subnet to launch into (that must be within the supplied VPC)",
+      "Type": "AWS::EC2::Subnet::Id"
+    },
+    "SubnetAZ": {
+      "Description": "The availability zone of the subnet supplied (for example eu-west-1a)",
+      "Type": "String"
     },
     "AllowSSHFrom": {
       "Description": "The net block (CIDR) that SSH is available to.",
@@ -46,35 +86,25 @@
     },
     "ExternalAccessSecurityGroupId": {
       "Description": "Optional security group id that is allowed to access exposed services",
-      "Default": "sg-887ba3ec",
+      "Default": "NONE",
       "Type": "String"
     },
-    "KeyPair": {
-      "Description": "The name of an EC2 Key Pair to allow SSH access to the instance.",
-      "Type": "AWS::EC2::KeyPair::KeyName",
-      "Default": "nadavsr-trueaccord"
-    },
-    "VpcId": {
-      "Description": "The ID of the VPC to launch into.",
-      "Type": "AWS::EC2::VPC::Id",
-      "Default": "vpc-c9977ba2"
-    },
-    "SubnetId": {
-      "Description": "The ID of the subnet to launch into (that must be within the supplied VPC)",
-      "Type": "AWS::EC2::Subnet::Id",
-      "Default": "subnet-5032d635"
-    },
-    "SubnetAZ": {
-      "Description": "The availability zone of the subnet supplied (for example eu-west-1a)",
+    "ManagedMinionPolicyArn": {
+      "Description": "Managed ARNs to apply to the minion role.",
       "Type": "String",
-      "Default": "us-west-2b"
+      "Default": "NONE"
+    },
+    "KubernetesBinaries": {
+      "Description": "URL to download Kubenetes binaries from.",
+      "Type": "String",
+      "Default": "http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com"
     }
   },
   "Conditions": {
     "UseEC2Classic": {
         "Fn::Equals": [{"Ref": "VpcId"}, ""]},
     "NoExternalAccessSecurityGroupId": {
-        "Fn::Equals": [{"Ref": "ExternalAccessSecurityGroupId"}, ""]},
+        "Fn::Equals": [{"Ref": "ExternalAccessSecurityGroupId"}, "NONE"]},
     "NoManagedMinionPolicyArn": {
         "Fn::Equals": [{"Ref": "ManagedMinionPolicyArn"}, "NONE"]
     }
@@ -258,7 +288,7 @@
           "DeleteOnTermination"      : "true",
           "SubnetId"                 : {"Fn::If": ["UseEC2Classic", {"Ref": "AWS::NoValue"}, {"Ref": "SubnetId"}]}
         }],
-        "ImageId": {"Ref": "AMI"},
+        "ImageId": {"Fn::FindInMap" : ["RegionMap", {"Ref": "AWS::Region" }, "AMI"]},
         "IamInstanceProfile" : {"Ref": "KubernetesMasterInstanceProfile"},
         "InstanceType": {"Ref": "MasterInstanceType"},
         "KeyName": {"Ref": "KeyPair"},
@@ -470,7 +500,7 @@
   "        [Service]\n", 
   "        EnvironmentFile=/etc/network-environment\n", 
   "        ExecStartPre=-/usr/bin/mkdir -p /opt/bin\n", 
-  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-apiserver -z /opt/bin/kube-apiserver http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kube-apiserver\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-apiserver -z /opt/bin/kube-apiserver ", {"Ref" : "KubernetesBinaries"}, "/kube-apiserver\n", 
   "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-apiserver\n", 
   "        ExecStartPre=/opt/bin/wupiao 127.0.0.1:2379/v2/machines\n", 
   "        ExecStart=/opt/bin/kube-apiserver \\\n", 
@@ -504,7 +534,7 @@
   "        After=kube-apiserver.service\n", 
   "\n", 
   "        [Service]\n", 
-  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-controller-manager -z /opt/bin/kube-controller-manager http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kube-controller-manager\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-controller-manager -z /opt/bin/kube-controller-manager ", {"Ref" : "KubernetesBinaries"}, "/kube-controller-manager\n", 
   "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-controller-manager\n", 
   "        ExecStart=/opt/bin/kube-controller-manager \\\n", 
   "        --service-account-private-key-file=/opt/bin/kube-serviceaccount.key \\\n", 
@@ -524,7 +554,7 @@
   "        After=kube-apiserver.service\n", 
   "\n", 
   "        [Service]\n", 
-  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-scheduler -z /opt/bin/kube-scheduler http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kube-scheduler\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-scheduler -z /opt/bin/kube-scheduler ", {"Ref" : "KubernetesBinaries"}, "/kube-scheduler\n", 
   "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-scheduler\n", 
   "        ExecStart=/opt/bin/kube-scheduler --master=127.0.0.1:8080\n", 
   "        Restart=always\n", 
@@ -540,7 +570,7 @@
     "KubernetesNodeLaunchConfig": {
       "Type": "AWS::AutoScaling::LaunchConfiguration",
       "Properties": {
-        "ImageId": {"Ref": "AMI"},
+        "ImageId": {"Fn::FindInMap" : ["RegionMap", {"Ref": "AWS::Region" }, "AMI"]},
         "InstanceType": {"Ref": "MinionInstanceType"},
         "KeyName": {"Ref": "KeyPair"},
         "AssociatePublicIpAddress" : "false",
@@ -632,7 +662,7 @@
   "        After=setup-network-environment.service fetch-kubeconfigs.service\n", 
   "\n", 
   "        [Service]\n", 
-  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-proxy -z /opt/bin/kube-proxy http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kube-proxy\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-proxy -z /opt/bin/kube-proxy ", {"Ref" : "KubernetesBinaries"}, "/kube-proxy\n", 
   "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-proxy\n", 
   "        # wait for kubernetes master to be up and ready\n", 
   "        ExecStartPre=/opt/bin/wupiao ", {"Fn::GetAtt" :["KubernetesMasterInstance" , "PrivateIp"]}, " 8080\n", 
@@ -653,7 +683,7 @@
   "\n", 
   "        [Service]\n", 
   "        EnvironmentFile=/etc/network-environment\n", 
-  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kubelet -z /opt/bin/kubelet http://nadavsr-kubernetes-build.s3-website-us-west-2.amazonaws.com/kubelet\n", 
+  "        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kubelet -z /opt/bin/kubelet ", {"Ref" : "KubernetesBinaries"}, "/kubelet\n", 
   "        ExecStartPre=/usr/bin/chmod +x /opt/bin/kubelet\n", 
   "        # wait for kubernetes master to be up and ready\n", 
   "        ExecStartPre=/opt/bin/wupiao ", {"Fn::GetAtt" :["KubernetesMasterInstance" , "PrivateIp"]}, " 8080\n", 
