@@ -14,8 +14,8 @@ cluster on EC2 machines running CoreOS.
 
 *Lowlights:*
 
-- Custom Kubernetes binaries are used instead of the official ones. Mainly, for
-  merging [this PR](https://github.com/GoogleCloudPlatform/kubernetes/pull/8530)
+- Custom Kubernetes binaries are used instead of the official ones. It was built from master,
+  and cherry-picked [this PR](https://github.com/GoogleCloudPlatform/kubernetes/pull/8530)
   since otherwise EBS mounting will not work. However, you can customize where
   the release is downloaded from by passing a parameter to the template (see
   the template for more information)
