@@ -155,8 +155,8 @@
             }],
             "ManagedPolicyArns": {
                 "Fn::If": [
-                    "NoManagedMinionPolicyArn", 
-                    {"Ref": "AWS::NoValue"}, 
+                    "NoManagedMinionPolicyArn",
+                    {"Ref": "AWS::NoValue"},
                     [{"Ref": "ManagedMinionPolicyArn"}]
                 ]}
         }

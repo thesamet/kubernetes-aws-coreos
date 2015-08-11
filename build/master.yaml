@@ -117,6 +117,13 @@ write-files:
         echo "${token},${account},${account}" >> "${KNOWN_TOKENS_FILE}"
       done
       touch /srv/kubernetes/.done
+  - path: /opt/bin/start-addons.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      cd $(mktemp -d)
+      git clone https://github.com/thesamet/kubernetes-aws-coreos.git
+      find kubernetes-aws-coreos/output -name *.yaml -exec /opt/bin/kubectl create -f {} \;
 
 hostname: master
 coreos:
@@ -201,7 +208,8 @@ coreos:
         EnvironmentFile=/etc/network-environment
         ExecStartPre=-/usr/bin/mkdir -p /opt/bin
         ExecStartPre=/usr/bin/curl -L -o /opt/bin/kube-apiserver -z /opt/bin/kube-apiserver <kube_binaries>/kube-apiserver
-        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-apiserver
+        ExecStartPre=/usr/bin/curl -L -o /opt/bin/kubectl -z /opt/bin/kubectl <kube_binaries>/kubectl
+        ExecStartPre=/usr/bin/chmod +x /opt/bin/kube-apiserver /opt/bin/kubectl
         ExecStartPre=/opt/bin/wupiao 127.0.0.1:2379/v2/machines
         ExecStart=/opt/bin/kube-apiserver \
         --service-account-key-file=/opt/bin/kube-serviceaccount.key \
@@ -259,6 +267,20 @@ coreos:
         ExecStart=/opt/bin/kube-scheduler --master=127.0.0.1:8080
         Restart=always
         RestartSec=10
+    - name: kube-start-addons.service
+      command: start
+      content: |
+        [Unit]
+        Description=Kubernetes Controller Manager
+        Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+        Requires=kube-apiserver.service
+        After=kube-apiserver.service
+
+        [Service]
+        ExecStartPre=/opt/bin/wupiao 127.0.0.1:8080
+        ExecStart=/opt/bin/start-addons.sh
+        Type=oneshot
+        RemainAfterExit=true
   update:
     group: alpha
     reboot-strategy: off
